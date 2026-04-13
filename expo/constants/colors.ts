@@ -1,0 +1,27 @@
+const Colors = {
+  shell: "#04070d",
+  backgroundTop: "#0a1020",
+  backgroundMid: "#11182d",
+  backgroundBottom: "#030507",
+  card: "#101827",
+  cardSoft: "rgba(16, 24, 39, 0.88)",
+  panel: "rgba(8, 12, 20, 0.92)",
+  panelAlt: "rgba(20, 28, 44, 0.96)",
+  outline: "rgba(132, 148, 177, 0.24)",
+  outlineStrong: "rgba(132, 148, 177, 0.48)",
+  text: "#f4f7fb",
+  textMuted: "#9ba8c7",
+  copper: "#ea8a34",
+  amber: "#ffb44c",
+  teal: "#34d5c8",
+  tealDark: "#13998f",
+  stone: "#6d7788",
+  coal: "#2e3644",
+  iron: "#cb7b57",
+  crystal: "#58e7ff",
+  success: "#69df9d",
+  danger: "#ff6f6b",
+  shadow: "rgba(0, 0, 0, 0.32)",
+};
+
+export default Colors;
