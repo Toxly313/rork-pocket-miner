@@ -1,4 +1,6 @@
 import * as Haptics from "expo-haptics";
+import * as Haptics from "expo-haptics";
+import * as Haptics from "expo-haptics";
 import { LinearGradient } from "expo-linear-gradient";
 import { StatusBar } from "expo-status-bar";
 import {
