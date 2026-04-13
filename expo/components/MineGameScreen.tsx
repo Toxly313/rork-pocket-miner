@@ -11,6 +11,7 @@ import {
   Store,
   Users,
   X,
+  Wrench,
 } from "lucide-react-native";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -45,6 +46,43 @@ import {
   TerrainType,
   VILLAGE_GRID,
 } from "@/constants/village";
+
+// ----------------------------------------------------------------------
+// Bauzonen – nur innerhalb dieser Rechtecke darf gebaut werden
+// ----------------------------------------------------------------------
+interface BuildingZone {
+  id: string;
+  x: number;      // linke obere Ecke (Tile X)
+  y: number;      // linke obere Ecke (Tile Y)
+  width: number;  // Breite in Tiles
+  height: number; // Höhe in Tiles
+}
+
+const BUILDING_ZONES: BuildingZone[] = [
+  { id: "zone1", x: 80, y: 80, width: 30, height: 20 },
+  { id: "zone2", x: 120, y: 110, width: 25, height: 15 },
+  { id: "zone3", x: 60, y: 120, width: 20, height: 25 },
+];
+
+function isWithinAnyZone(tileX: number, tileY: number, footprintW: number, footprintH: number): boolean {
+  for (const zone of BUILDING_ZONES) {
+    const zoneRight = zone.x + zone.width;
+    const zoneBottom = zone.y + zone.height;
+    const buildingRight = tileX + footprintW;
+    const buildingBottom = tileY + footprintH;
+
+    if (
+      tileX >= zone.x &&
+      tileY >= zone.y &&
+      buildingRight <= zoneRight &&
+      buildingBottom <= zoneBottom
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+// ----------------------------------------------------------------------
 
 type SpendableResource = "gold" | "elixir" | "gems";
 
@@ -138,7 +176,7 @@ const TILE_BUFFER = 2;
 const MOVE_SYNC_TILES = 4;
 const SCALE_SYNC_THRESHOLD = 0.08;
 const TAP_MOVE_THRESHOLD = 4;
-const MIN_ZOOM = 0.91; // 50% weniger Rauszoom als vorher (0.82)
+const MIN_ZOOM = 0.91; // 50% weniger Rauszoom
 const MAX_ZOOM = 1.25;
 const DRAG_RELEASE_COOLDOWN_MS = 80;
 const GRID_HIDE_ZOOM = 0.55;
@@ -743,12 +781,21 @@ export default function MineGameScreen() {
     [triggerSelectionHaptic]
   );
 
+  // ----------------------------------------------------------------------
+  // Platzierungsprüfung mit Bauzonen
+  // ----------------------------------------------------------------------
   const getPlacementResult = useCallback(
     (type: BuildingType, tileX: number, tileY: number): PlacementResult => {
       const template = BUILDING_TEMPLATES[type];
       const fitsWidth = tileX >= 0 && tileX + template.footprint.width <= VILLAGE_GRID.columns;
       const fitsHeight = tileY >= 0 && tileY + template.footprint.height <= VILLAGE_GRID.rows;
       if (!fitsWidth || !fitsHeight) return { ok: false, reason: "Außerhalb des Dorfes." };
+
+      // Prüfung auf Bauzone
+      if (!isWithinAnyZone(tileX, tileY, template.footprint.width, template.footprint.height)) {
+        return { ok: false, reason: "Nur in Bauzonen erlaubt." };
+      }
+
       const footprintTiles = getFootprintTiles(type, tileX, tileY);
       const hitsWater = footprintTiles.some((tile) => getTerrainAt(tile.x, tile.y) === "water");
       if (hitsWater) return { ok: false, reason: "Nicht auf Wasser baubar." };
@@ -770,6 +817,9 @@ export default function MineGameScreen() {
     [triggerSelectionHaptic]
   );
 
+  // ----------------------------------------------------------------------
+  // Bodenklick: Öffnet NICHT das Baumenü, nur Auswahl aufheben
+  // ----------------------------------------------------------------------
   const handleGroundPress = useCallback(
     (tileX: number, tileY: number) => {
       if (isDraggingRef.current || Date.now() < dragCooldownUntilRef.current) return;
@@ -779,7 +829,6 @@ export default function MineGameScreen() {
 
       if (selectedBuildType === null) {
         setSelectedBuildingId(null);
-        setShowBuildTray(true);
         triggerSelectionHaptic();
         return;
       }
@@ -826,6 +875,17 @@ export default function MineGameScreen() {
     },
     [freeBuilders, getPlacementResult, resources, selectedBuildType, triggerImpactHaptic, triggerSelectionHaptic]
   );
+
+  // ----------------------------------------------------------------------
+  // Button zum Öffnen/Schließen des Baumenüs
+  // ----------------------------------------------------------------------
+  const toggleBuildTray = useCallback(() => {
+    setShowBuildTray((prev) => !prev);
+    if (!showBuildTray) {
+      setSelectedBuildType(null);
+    }
+    triggerSelectionHaptic();
+  }, [showBuildTray, triggerSelectionHaptic]);
 
   const handleOpenBuilding = useCallback(
     (buildingId: string) => {
@@ -1048,7 +1108,9 @@ export default function MineGameScreen() {
     [applyInteractiveTransform, cancelFinalViewportSync, clampCameraPosition, handleViewportTap, scheduleFinalViewportSync]
   );
 
-  // Neue synchrone Berechnungsfunktionen (verwenden cameraRef/scaleRef direkt)
+  // ----------------------------------------------------------------------
+  // Synchrone Sichtbarkeitsberechnung (fixes Flackern)
+  // ----------------------------------------------------------------------
   const getCurrentVisibleRange = useCallback((): VisibleRange => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) {
       return { startCol: 0, endCol: 0, startRow: 0, endRow: 0 };
@@ -1445,11 +1507,29 @@ export default function MineGameScreen() {
       <LinearGradient colors={["#0b1a2e", "#0f1f33", "#081220"]} style={StyleSheet.absoluteFillObject} />
 
       <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-        <View style={styles.resourceBar}>
-          <View style={styles.resourceChip}><Coins color="#ffd064" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.gold)}</Text></View>
-          <View style={styles.resourceChip}><Gem color="#ef84ff" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.elixir)}</Text></View>
-          <View style={styles.resourceChip}><Gem color="#6ce9ff" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.gems)}</Text></View>
-          <View style={styles.resourceChip}><Hammer color="#9ef58b" size={14} /><Text style={styles.resourceChipValue}>{freeBuilders}/{resources.builders}</Text></View>
+        {/* Obere Leiste mit Ressourcen und Bau-Button */}
+        <View style={styles.topBar}>
+          <View style={styles.resourceBar}>
+            <View style={styles.resourceChip}><Coins color="#ffd064" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.gold)}</Text></View>
+            <View style={styles.resourceChip}><Gem color="#ef84ff" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.elixir)}</Text></View>
+            <View style={styles.resourceChip}><Gem color="#6ce9ff" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.gems)}</Text></View>
+            <View style={styles.resourceChip}><Hammer color="#9ef58b" size={14} /><Text style={styles.resourceChipValue}>{freeBuilders}/{resources.builders}</Text></View>
+          </View>
+          {activeTab === "base" && !openedBuilding && (
+            <Pressable
+              onPress={toggleBuildTray}
+              style={({ pressed }) => [
+                styles.buildToggleButton,
+                showBuildTray && styles.buildToggleButtonActive,
+                pressed && styles.buildToggleButtonPressed,
+              ]}
+            >
+              <Wrench color={showBuildTray ? "#0b1a2e" : "#fff"} size={18} />
+              <Text style={[styles.buildToggleText, showBuildTray && styles.buildToggleTextActive]}>
+                {showBuildTray ? "Schließen" : "Bauen"}
+              </Text>
+            </Pressable>
+          )}
         </View>
 
         <View style={styles.mainArea}>
@@ -1476,12 +1556,17 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
   },
-  resourceBar: {
+  topBar: {
     flexDirection: "row",
-    justifyContent: "center",
-    gap: 10,
+    alignItems: "center",
+    justifyContent: "space-between",
     paddingHorizontal: 12,
     paddingVertical: 6,
+    backgroundColor: "rgba(0,0,0,0.2)",
+  },
+  resourceBar: {
+    flexDirection: "row",
+    gap: 10,
   },
   resourceChip: {
     flexDirection: "row",
@@ -1497,24 +1582,42 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "800" as const,
   },
+  buildToggleButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  buildToggleButtonActive: {
+    backgroundColor: "#e8f4ff",
+    borderColor: "#e8f4ff",
+  },
+  buildToggleButtonPressed: {
+    transform: [{ scale: 0.96 }],
+  },
+  buildToggleText: {
+    color: "#fff",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  buildToggleTextActive: {
+    color: "#0b1a2e",
+  },
   mainArea: {
     flex: 1,
     minHeight: 0,
   },
   baseStage: {
     flex: 1,
-    paddingHorizontal: 10,
-    paddingTop: 6,
-    paddingBottom: 8,
-    alignItems: "center",
-    justifyContent: "flex-start",
+    padding: 8,
   },
   viewportFrame: {
-    width: "100%",
-    height: "82%",
-    minHeight: 300,
-    maxHeight: 560,
-    maxWidth: 520,
+    flex: 1,
     borderRadius: 24,
     overflow: "hidden",
     borderWidth: 1,
