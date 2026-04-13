@@ -114,14 +114,6 @@ interface TerrainFeatureTile {
   color: string;
 }
 
-interface TerrainMarker {
-  key: string;
-  x: number;
-  y: number;
-  terrain: TerrainType;
-  color: string;
-}
-
 interface GridLineData {
   key: string;
   left: number;
@@ -142,24 +134,15 @@ interface BuildingPlaceholderCard {
   body: string;
 }
 
-interface BuildingLayoutData {
-  building: PlacedBuilding;
-  rect: {
-    left: number;
-    top: number;
-    width: number;
-    height: number;
-  };
-}
-
 const TILE_BUFFER = 2;
+const MOVE_SYNC_TILES = 4;
+const SCALE_SYNC_THRESHOLD = 0.08;
 const TAP_MOVE_THRESHOLD = 4;
-const MIN_ZOOM = 0.82;
+const MIN_ZOOM = 0.91; // 50% weniger Rauszoom als vorher (0.82)
 const MAX_ZOOM = 1.25;
 const DRAG_RELEASE_COOLDOWN_MS = 80;
-const GRID_HIDE_ZOOM = 1.08;
+const GRID_HIDE_ZOOM = 0.55;
 const DOUBLE_TAP_DELAY_MS = 260;
-const INTERACTION_SETTLE_DELAY_MS = 96;
 
 function getTerrainAt(x: number, y: number): TerrainType {
   const cols = VILLAGE_GRID.columns;
@@ -215,27 +198,6 @@ function getTerrainColor(terrain: TerrainType, x: number, y: number): string {
   const b = 0.72 + hash;
   return `rgb(${Math.round(62 * b)},${Math.round(148 * b)},${Math.round(65 * b)})`;
 }
-
-const TERRAIN_MARKERS: TerrainMarker[] = (() => {
-  const markers: TerrainMarker[] = [];
-
-  for (let row = 0; row < VILLAGE_GRID.rows; row += 1) {
-    for (let col = 0; col < VILLAGE_GRID.columns; col += 1) {
-      const terrain = getTerrainAt(col, row);
-      if (terrain === "grass") continue;
-      markers.push({
-        key: `${col}-${row}`,
-        x: col,
-        y: row,
-        terrain,
-        color: getTerrainColor(terrain, col, row),
-      });
-    }
-  }
-
-  console.log("[village] terrain markers prepared", { count: markers.length });
-  return markers;
-})();
 
 const HubButton = React.memo(function HubButton({ label, active, icon, onPress, testID }: HubButtonProps) {
   return (
@@ -545,7 +507,6 @@ export default function MineGameScreen() {
   const [camera, setCamera] = useState<CameraState>({ x: 0, y: 0 });
   const [scale, setScale] = useState<number>(1);
   const [now, setNow] = useState<number>(Date.now());
-  const [isWorldSettled, setIsWorldSettled] = useState<boolean>(true);
   const cameraStartRef = useRef<CameraState>({ x: 0, y: 0 });
   const scaleStartRef = useRef<number>(1);
   const pinchStartDistRef = useRef<number>(0);
@@ -555,9 +516,12 @@ export default function MineGameScreen() {
   const lastBuildingTapRef = useRef<BuildingTapState>({ buildingId: null, occurredAt: 0 });
   const scaleRef = useRef<number>(1);
   const cameraRef = useRef<CameraState>({ x: 0, y: 0 });
+  const cameraStateRef = useRef<CameraState>({ x: 0, y: 0 });
+  const scaleStateRef = useRef<number>(1);
   const dragCooldownUntilRef = useRef<number>(0);
-  const interactionSettleFrameRef = useRef<number | null>(null);
-  const interactionSettleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingViewportSyncRef = useRef<{ camera: CameraState; scale: number; force: boolean } | null>(null);
+  const viewportSyncFrameRef = useRef<number | null>(null);
+  const finalViewportSyncFrameRef = useRef<number | null>(null);
   const animatedCamera = useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
   const animatedScale = useRef(new Animated.Value(1)).current;
 
@@ -580,14 +544,6 @@ export default function MineGameScreen() {
   const sortedBuildings = useMemo(
     () => [...buildings].sort((a, b) => a.tileY - b.tileY || a.tileX - b.tileX),
     [buildings]
-  );
-  const buildingLayouts = useMemo<BuildingLayoutData[]>(
-    () =>
-      sortedBuildings.map((building) => ({
-        building,
-        rect: getBuildingRect(building, tileSize, tileGap),
-      })),
-    [sortedBuildings, tileGap, tileSize]
   );
 
   const occupancyMap = useMemo(() => {
@@ -653,57 +609,79 @@ export default function MineGameScreen() {
     [viewportSize.height, viewportSize.width, worldHeight, worldWidth]
   );
 
-  const commitVisibleViewportState = useCallback((nextCamera: CameraState, nextScale: number) => {
-    setCamera(nextCamera);
-    setScale(nextScale);
+  const commitVisibleViewportState = useCallback(
+    (nextCamera: CameraState, nextScale: number, force?: boolean) => {
+      const syncDistance = Math.max(worldUnit * nextScale * MOVE_SYNC_TILES, 12);
+      const shouldSync =
+        force === true ||
+        Math.abs(nextCamera.x - cameraStateRef.current.x) >= syncDistance ||
+        Math.abs(nextCamera.y - cameraStateRef.current.y) >= syncDistance ||
+        Math.abs(nextScale - scaleStateRef.current) >= SCALE_SYNC_THRESHOLD;
+
+      if (!shouldSync) return;
+
+      cameraStateRef.current = nextCamera;
+      scaleStateRef.current = nextScale;
+      setCamera(nextCamera);
+      setScale(nextScale);
+    },
+    [worldUnit]
+  );
+
+  const scheduleVisibleViewportState = useCallback(
+    (nextCamera: CameraState, nextScale: number, force?: boolean) => {
+      pendingViewportSyncRef.current = { camera: nextCamera, scale: nextScale, force: force === true };
+      if (viewportSyncFrameRef.current !== null) return;
+
+      viewportSyncFrameRef.current = requestAnimationFrame(() => {
+        viewportSyncFrameRef.current = null;
+        const pending = pendingViewportSyncRef.current;
+        pendingViewportSyncRef.current = null;
+        if (!pending) return;
+        commitVisibleViewportState(pending.camera, pending.scale, pending.force);
+      });
+    },
+    [commitVisibleViewportState]
+  );
+
+  const cancelFinalViewportSync = useCallback(() => {
+    if (finalViewportSyncFrameRef.current === null) return;
+    cancelAnimationFrame(finalViewportSyncFrameRef.current);
+    finalViewportSyncFrameRef.current = null;
   }, []);
 
-  const cancelInteractionSettle = useCallback(() => {
-    if (interactionSettleFrameRef.current !== null) {
-      cancelAnimationFrame(interactionSettleFrameRef.current);
-      interactionSettleFrameRef.current = null;
-    }
-    if (interactionSettleTimeoutRef.current !== null) {
-      clearTimeout(interactionSettleTimeoutRef.current);
-      interactionSettleTimeoutRef.current = null;
-    }
-  }, []);
-
-  const scheduleInteractionSettle = useCallback(() => {
-    cancelInteractionSettle();
-    interactionSettleFrameRef.current = requestAnimationFrame(() => {
-      interactionSettleFrameRef.current = null;
-      interactionSettleTimeoutRef.current = setTimeout(() => {
-        interactionSettleTimeoutRef.current = null;
-        setIsWorldSettled(true);
-        commitVisibleViewportState(cameraRef.current, scaleRef.current);
-      }, INTERACTION_SETTLE_DELAY_MS);
-    });
-  }, [cancelInteractionSettle, commitVisibleViewportState]);
-
-  const markInteractionActive = useCallback(() => {
-    cancelInteractionSettle();
-    setIsWorldSettled((current) => (current ? false : current));
-  }, [cancelInteractionSettle]);
+  const scheduleFinalViewportSync = useCallback(
+    (nextCamera: CameraState, nextScale: number) => {
+      cancelFinalViewportSync();
+      finalViewportSyncFrameRef.current = requestAnimationFrame(() => {
+        finalViewportSyncFrameRef.current = null;
+        commitVisibleViewportState(nextCamera, nextScale, true);
+      });
+    },
+    [cancelFinalViewportSync, commitVisibleViewportState]
+  );
 
   const applyInteractiveTransform = useCallback(
-    (nextCamera: CameraState, nextScale: number, commitImmediately?: boolean) => {
+    (nextCamera: CameraState, nextScale: number, forceSync?: boolean) => {
       cameraRef.current = nextCamera;
       scaleRef.current = nextScale;
       animatedCamera.setValue(nextCamera);
       animatedScale.setValue(nextScale);
-      if (commitImmediately) {
-        commitVisibleViewportState(nextCamera, nextScale);
-      }
+      scheduleVisibleViewportState(nextCamera, nextScale, forceSync);
     },
-    [animatedCamera, animatedScale, commitVisibleViewportState]
+    [animatedCamera, animatedScale, scheduleVisibleViewportState]
   );
 
   useEffect(() => {
     return () => {
-      cancelInteractionSettle();
+      if (viewportSyncFrameRef.current !== null) {
+        cancelAnimationFrame(viewportSyncFrameRef.current);
+      }
+      if (finalViewportSyncFrameRef.current !== null) {
+        cancelAnimationFrame(finalViewportSyncFrameRef.current);
+      }
     };
-  }, [cancelInteractionSettle]);
+  }, []);
 
   useEffect(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) return;
@@ -943,17 +921,18 @@ export default function MineGameScreen() {
 
   const getBuildingIdAtWorldPoint = useCallback(
     (worldX: number, worldY: number): string | null => {
-      for (let index = buildingLayouts.length - 1; index >= 0; index -= 1) {
-        const layout = buildingLayouts[index];
-        const withinX = worldX >= layout.rect.left && worldX <= layout.rect.left + layout.rect.width;
-        const withinY = worldY >= layout.rect.top && worldY <= layout.rect.top + layout.rect.height;
+      for (let index = sortedBuildings.length - 1; index >= 0; index -= 1) {
+        const building = sortedBuildings[index];
+        const rect = getBuildingRect(building, tileSize, tileGap);
+        const withinX = worldX >= rect.left && worldX <= rect.left + rect.width;
+        const withinY = worldY >= rect.top && worldY <= rect.top + rect.height;
         if (withinX && withinY) {
-          return layout.building.id;
+          return building.id;
         }
       }
       return null;
     },
-    [buildingLayouts]
+    [sortedBuildings, tileGap, tileSize]
   );
 
   const handleViewportTap = useCallback(
@@ -990,7 +969,7 @@ export default function MineGameScreen() {
         },
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (evt) => {
-          cancelInteractionSettle();
+          cancelFinalViewportSync();
           cameraStartRef.current = cameraRef.current;
           scaleStartRef.current = scaleRef.current;
           isDraggingRef.current = false;
@@ -1000,7 +979,6 @@ export default function MineGameScreen() {
             pinchStartDistRef.current = getTouchDistance(evt);
             isPinchingRef.current = true;
             isDraggingRef.current = true;
-            markInteractionActive();
           }
         },
         onPanResponderMove: (evt, gs) => {
@@ -1009,7 +987,6 @@ export default function MineGameScreen() {
 
           if (touches && touches.length >= 2) {
             isDraggingRef.current = true;
-            markInteractionActive();
             if (!isPinchingRef.current) {
               pinchStartDistRef.current = getTouchDistance(evt);
               scaleStartRef.current = scaleRef.current;
@@ -1040,7 +1017,6 @@ export default function MineGameScreen() {
           if (!movedEnough) return;
 
           isDraggingRef.current = true;
-          markInteractionActive();
           const newCam = clampCameraPosition({
             x: cameraStartRef.current.x + gs.dx,
             y: cameraStartRef.current.y + gs.dy,
@@ -1060,57 +1036,87 @@ export default function MineGameScreen() {
           }
 
           dragCooldownUntilRef.current = Date.now() + DRAG_RELEASE_COOLDOWN_MS;
-          scheduleInteractionSettle();
+          scheduleFinalViewportSync(cameraRef.current, scaleRef.current);
         },
         onPanResponderTerminate: () => {
           isPinchingRef.current = false;
           isDraggingRef.current = false;
           dragCooldownUntilRef.current = Date.now() + DRAG_RELEASE_COOLDOWN_MS;
-          scheduleInteractionSettle();
+          scheduleFinalViewportSync(cameraRef.current, scaleRef.current);
         },
       }),
-    [applyInteractiveTransform, cancelInteractionSettle, clampCameraPosition, handleViewportTap, markInteractionActive, scheduleInteractionSettle]
+    [applyInteractiveTransform, cancelFinalViewportSync, clampCameraPosition, handleViewportTap, scheduleFinalViewportSync]
   );
 
-  const visibleRange = useMemo<VisibleRange>(() => {
+  // Neue synchrone Berechnungsfunktionen (verwenden cameraRef/scaleRef direkt)
+  const getCurrentVisibleRange = useCallback((): VisibleRange => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) {
       return { startCol: 0, endCol: 0, startRow: 0, endRow: 0 };
     }
-    return computeVisibleRange(camera, viewportSize.width, viewportSize.height, worldUnit, scale);
-  }, [camera, viewportSize.width, viewportSize.height, worldUnit, scale]);
+    return computeVisibleRange(
+      cameraRef.current,
+      viewportSize.width,
+      viewportSize.height,
+      worldUnit,
+      scaleRef.current
+    );
+  }, [viewportSize.width, viewportSize.height, worldUnit]);
 
-  const visibleTerrainFeatures = useMemo<TerrainFeatureTile[]>(() => {
-    if (!isWorldSettled) return [];
-
-    const showFlowers = scale >= 1.02;
-    return TERRAIN_MARKERS.filter((marker) => {
-      if (marker.x < visibleRange.startCol || marker.x > visibleRange.endCol) return false;
-      if (marker.y < visibleRange.startRow || marker.y > visibleRange.endRow) return false;
-      if (marker.terrain === "flowers" && !showFlowers) return false;
-      return true;
-    }).map((marker) => {
-      const left = marker.x * worldUnit;
-      const top = marker.y * worldUnit;
-      return {
-        key: marker.key,
-        left,
-        top,
-        width: Math.min(worldUnit - tileGap, worldWidth - left),
-        height: Math.min(worldUnit - tileGap, worldHeight - top),
-        color: marker.color,
-      };
+  const getVisibleBuildings = useCallback(() => {
+    const range = getCurrentVisibleRange();
+    return sortedBuildings.filter((building) => {
+      const template = BUILDING_TEMPLATES[building.type];
+      const bRight = building.tileX + template.footprint.width;
+      const bBottom = building.tileY + template.footprint.height;
+      return (
+        bRight >= range.startCol &&
+        building.tileX <= range.endCol &&
+        bBottom >= range.startRow &&
+        building.tileY <= range.endRow
+      );
     });
-  }, [isWorldSettled, scale, tileGap, visibleRange, worldHeight, worldUnit, worldWidth]);
+  }, [getCurrentVisibleRange, sortedBuildings]);
 
-  const gridLines = useMemo<GridLineData[]>(() => {
-    if (!isWorldSettled || scale < GRID_HIDE_ZOOM) return [];
+  const getVisibleTerrainFeatures = useCallback((): TerrainFeatureTile[] => {
+    const range = getCurrentVisibleRange();
+    const showFlowers = true;
+    const sampleStep = 1;
+    const features: TerrainFeatureTile[] = [];
 
+    for (let row = range.startRow; row <= range.endRow; row += sampleStep) {
+      for (let col = range.startCol; col <= range.endCol; col += sampleStep) {
+        const terrain = getTerrainAt(col, row);
+        if (terrain === "grass") continue;
+        if (terrain === "flowers" && !showFlowers) continue;
+
+        const left = col * worldUnit;
+        const top = row * worldUnit;
+        const width = Math.min(sampleStep * worldUnit - tileGap, worldWidth - left);
+        const height = Math.min(sampleStep * worldUnit - tileGap, worldHeight - top);
+
+        features.push({
+          key: `${col}-${row}-${sampleStep}`,
+          left,
+          top,
+          width,
+          height,
+          color: getTerrainColor(terrain, col, row),
+        });
+      }
+    }
+    return features;
+  }, [getCurrentVisibleRange, tileGap, worldHeight, worldUnit, worldWidth]);
+
+  const getGridLines = useCallback((): GridLineData[] => {
+    if (scaleRef.current < GRID_HIDE_ZOOM) return [];
+
+    const range = getCurrentVisibleRange();
     const lines: GridLineData[] = [];
     const step = 1;
-    const startCol = Math.max(0, visibleRange.startCol - 1);
-    const endCol = Math.min(VILLAGE_GRID.columns, visibleRange.endCol + 1);
-    const startRow = Math.max(0, visibleRange.startRow - 1);
-    const endRow = Math.min(VILLAGE_GRID.rows, visibleRange.endRow + 1);
+    const startCol = Math.max(0, range.startCol - 1);
+    const endCol = Math.min(VILLAGE_GRID.columns, range.endCol + 1);
+    const startRow = Math.max(0, range.startRow - 1);
+    const endRow = Math.min(VILLAGE_GRID.rows, range.endRow + 1);
     const lineThickness = 1;
     const lineHeight = Math.max(0, (endRow - startRow + 1) * worldUnit);
     const lineWidth = Math.max(0, (endCol - startCol + 1) * worldUnit);
@@ -1136,44 +1142,7 @@ export default function MineGameScreen() {
     }
 
     return lines;
-  }, [isWorldSettled, scale, visibleRange, worldUnit]);
-
-  const terrainFeatureElements = useMemo(
-    () => visibleTerrainFeatures.map((tile) => (
-      <View
-        key={tile.key}
-        style={[
-          styles.terrainFeature,
-          { left: tile.left, top: tile.top, width: tile.width, height: tile.height, backgroundColor: tile.color },
-        ]}
-      />
-    )),
-    [visibleTerrainFeatures]
-  );
-
-  const gridLineElements = useMemo(
-    () => gridLines.map((line) => (
-      <View
-        key={line.key}
-        style={[
-          styles.gridLine,
-          { left: line.left, top: line.top, width: line.width, height: line.height },
-        ]}
-      />
-    )),
-    [gridLines]
-  );
-  const renderedBuildingLayouts = useMemo(() => {
-    if (!isWorldSettled) return buildingLayouts;
-
-    return buildingLayouts.filter(({ building }) => {
-      const template = BUILDING_TEMPLATES[building.type];
-      const bRight = building.tileX + template.footprint.width;
-      const bBottom = building.tileY + template.footprint.height;
-      return bRight >= visibleRange.startCol && building.tileX <= visibleRange.endCol &&
-             bBottom >= visibleRange.startRow && building.tileY <= visibleRange.endRow;
-    });
-  }, [buildingLayouts, isWorldSettled, visibleRange]);
+  }, [getCurrentVisibleRange, worldUnit]);
 
   const renderOpenedBuildingContent = () => {
     if (!openedBuilding) return null;
@@ -1233,6 +1202,10 @@ export default function MineGameScreen() {
   };
 
   const renderBaseContent = () => {
+    const visibleBuildingsNow = getVisibleBuildings();
+    const terrainFeaturesNow = getVisibleTerrainFeatures();
+    const gridLinesNow = getGridLines();
+
     return (
       <View style={styles.baseStage} testID="base-stage">
         <View style={styles.viewportFrame}>
@@ -1273,11 +1246,28 @@ export default function MineGameScreen() {
                 ]}
               >
                 <View style={styles.worldBackdrop} />
-                {terrainFeatureElements}
-                {gridLineElements}
+                {terrainFeaturesNow.map((tile) => (
+                  <View
+                    key={tile.key}
+                    style={[
+                      styles.terrainFeature,
+                      { left: tile.left, top: tile.top, width: tile.width, height: tile.height, backgroundColor: tile.color },
+                    ]}
+                  />
+                ))}
+                {gridLinesNow.map((line) => (
+                  <View
+                    key={line.key}
+                    style={[
+                      styles.gridLine,
+                      { left: line.left, top: line.top, width: line.width, height: line.height },
+                    ]}
+                  />
+                ))}
 
-                {renderedBuildingLayouts.map(({ building, rect }) => {
+                {visibleBuildingsNow.map((building) => {
                   const template = BUILDING_TEMPLATES[building.type];
+                  const rect = getBuildingRect(building, tileSize, tileGap);
                   const remaining = getRemainingSeconds(building, now);
                   const isSelected = selectedBuildingId === building.id;
 
@@ -1449,58 +1439,31 @@ export default function MineGameScreen() {
     return null;
   };
 
-  const isBaseTab = activeTab === "base";
-
   return (
     <View style={styles.screen}>
       <StatusBar style="light" />
       <LinearGradient colors={["#0b1a2e", "#0f1f33", "#081220"]} style={StyleSheet.absoluteFillObject} />
 
       <SafeAreaView style={styles.safeArea} edges={["top", "bottom"]}>
-        {isBaseTab ? (
-          <View style={styles.baseFullscreenShell}>
-            <View style={styles.mainArea}>{renderBaseContent()}</View>
+        <View style={styles.resourceBar}>
+          <View style={styles.resourceChip}><Coins color="#ffd064" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.gold)}</Text></View>
+          <View style={styles.resourceChip}><Gem color="#ef84ff" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.elixir)}</Text></View>
+          <View style={styles.resourceChip}><Gem color="#6ce9ff" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.gems)}</Text></View>
+          <View style={styles.resourceChip}><Hammer color="#9ef58b" size={14} /><Text style={styles.resourceChipValue}>{freeBuilders}/{resources.builders}</Text></View>
+        </View>
 
-            <View style={styles.baseTopOverlay} pointerEvents="box-none">
-              <View style={styles.resourceBar}>
-                <View style={styles.resourceChip}><Coins color="#ffd064" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.gold)}</Text></View>
-                <View style={styles.resourceChip}><Gem color="#ef84ff" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.elixir)}</Text></View>
-                <View style={styles.resourceChip}><Gem color="#6ce9ff" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.gems)}</Text></View>
-                <View style={styles.resourceChip}><Hammer color="#9ef58b" size={14} /><Text style={styles.resourceChipValue}>{freeBuilders}/{resources.builders}</Text></View>
-              </View>
-            </View>
+        <View style={styles.mainArea}>
+          {activeTab === "base" ? renderBaseContent() : activeTab === "shop" ? renderShopContent() : activeTab === "guild" ? renderGuildContent() : renderInventoryContent()}
+        </View>
 
-            <View style={styles.baseBottomOverlay} pointerEvents="box-none">
-              {renderBottomPanel()}
-              <View style={styles.hubBar} testID="hub-bar">
-                <HubButton label="Dorf" active={activeTab === "base"} icon={<House color={activeTab === "base" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("base")} testID="hub-base" />
-                <HubButton label="Shop" active={activeTab === "shop"} icon={<Store color={activeTab === "shop" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("shop")} testID="hub-shop" />
-                <HubButton label="Gilde" active={activeTab === "guild"} icon={<Users color={activeTab === "guild" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("guild")} testID="hub-guild" />
-                <HubButton label="Inventar" active={activeTab === "inventory"} icon={<Package color={activeTab === "inventory" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("inventory")} testID="hub-inventory" />
-              </View>
-            </View>
-          </View>
-        ) : (
-          <>
-            <View style={styles.resourceBar}>
-              <View style={styles.resourceChip}><Coins color="#ffd064" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.gold)}</Text></View>
-              <View style={styles.resourceChip}><Gem color="#ef84ff" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.elixir)}</Text></View>
-              <View style={styles.resourceChip}><Gem color="#6ce9ff" size={14} /><Text style={styles.resourceChipValue}>{formatCompactNumber(resources.gems)}</Text></View>
-              <View style={styles.resourceChip}><Hammer color="#9ef58b" size={14} /><Text style={styles.resourceChipValue}>{freeBuilders}/{resources.builders}</Text></View>
-            </View>
+        {renderBottomPanel()}
 
-            <View style={styles.mainArea}>
-              {activeTab === "shop" ? renderShopContent() : activeTab === "guild" ? renderGuildContent() : renderInventoryContent()}
-            </View>
-
-            <View style={styles.hubBar} testID="hub-bar">
-              <HubButton label="Dorf" active={activeTab === "base"} icon={<House color={activeTab === "base" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("base")} testID="hub-base" />
-              <HubButton label="Shop" active={activeTab === "shop"} icon={<Store color={activeTab === "shop" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("shop")} testID="hub-shop" />
-              <HubButton label="Gilde" active={activeTab === "guild"} icon={<Users color={activeTab === "guild" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("guild")} testID="hub-guild" />
-              <HubButton label="Inventar" active={activeTab === "inventory"} icon={<Package color={activeTab === "inventory" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("inventory")} testID="hub-inventory" />
-            </View>
-          </>
-        )}
+        <View style={styles.hubBar} testID="hub-bar">
+          <HubButton label="Dorf" active={activeTab === "base"} icon={<House color={activeTab === "base" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("base")} testID="hub-base" />
+          <HubButton label="Shop" active={activeTab === "shop"} icon={<Store color={activeTab === "shop" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("shop")} testID="hub-shop" />
+          <HubButton label="Gilde" active={activeTab === "guild"} icon={<Users color={activeTab === "guild" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("guild")} testID="hub-guild" />
+          <HubButton label="Inventar" active={activeTab === "inventory"} icon={<Package color={activeTab === "inventory" ? "#0b1a2e" : Colors.text} size={18} />} onPress={() => handleSelectTab("inventory")} testID="hub-inventory" />
+        </View>
       </SafeAreaView>
     </View>
   );
@@ -1538,41 +1501,24 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: 0,
   },
-  baseFullscreenShell: {
-    flex: 1,
-  },
-  baseTopOverlay: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    paddingTop: 4,
-    paddingHorizontal: 10,
-  },
-  baseBottomOverlay: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    gap: 8,
-    paddingHorizontal: 10,
-    paddingBottom: 4,
-  },
   baseStage: {
     flex: 1,
-    paddingHorizontal: 0,
-    paddingTop: 0,
-    paddingBottom: 0,
-    alignItems: "stretch",
+    paddingHorizontal: 10,
+    paddingTop: 6,
+    paddingBottom: 8,
+    alignItems: "center",
     justifyContent: "flex-start",
   },
   viewportFrame: {
-    flex: 1,
     width: "100%",
-    minHeight: 0,
-    borderRadius: 0,
+    height: "82%",
+    minHeight: 300,
+    maxHeight: 560,
+    maxWidth: 520,
+    borderRadius: 24,
     overflow: "hidden",
-    borderWidth: 0,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
     backgroundColor: "#07111d",
   },
   viewport: {
@@ -1975,8 +1921,8 @@ const styles = StyleSheet.create({
     fontWeight: "800" as const,
   },
   bottomPanel: {
-    marginHorizontal: 0,
-    marginBottom: 0,
+    marginHorizontal: 10,
+    marginBottom: 6,
     borderRadius: 18,
     backgroundColor: "rgba(8,14,26,0.95)",
     borderWidth: 1,
@@ -2099,8 +2045,8 @@ const styles = StyleSheet.create({
   hubBar: {
     flexDirection: "row",
     gap: 6,
-    marginHorizontal: 0,
-    marginBottom: 0,
+    marginHorizontal: 10,
+    marginBottom: 4,
     padding: 6,
     borderRadius: 20,
     backgroundColor: "rgba(8,14,26,0.96)",
