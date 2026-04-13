@@ -337,9 +337,9 @@ function getRemainingSeconds(building: PlacedBuilding, now: number): number {
   return Math.max(0, building.durationSeconds - elapsed);
 }
 
-function getFootprintTiles(type: BuildingType, tileX: number, tileY: number): Array<{ x: number; y: number }> {
+function getFootprintTiles(type: BuildingType, tileX: number, tileY: number): { x: number; y: number }[] {
   const template = BUILDING_TEMPLATES[type];
-  const tiles: Array<{ x: number; y: number }> = [];
+  const tiles: { x: number; y: number }[] = [];
   for (let row = 0; row < template.footprint.height; row += 1) {
     for (let col = 0; col < template.footprint.width; col += 1) {
       tiles.push({ x: tileX + col, y: tileY + row });
@@ -1083,7 +1083,7 @@ export default function MineGameScreen() {
     }
 
     return features;
-  }, [scale, tileGap, visibleRange, worldHeight, worldUnit, worldWidth]);
+  }, [tileGap, visibleRange, worldHeight, worldUnit, worldWidth]);
 
   const gridLines = useMemo<GridLineData[]>(() => {
     if (scale < GRID_HIDE_ZOOM) return [];
@@ -1131,7 +1131,7 @@ export default function MineGameScreen() {
         ]}
       />
     )),
-    [tileSize, visibleTerrainFeatures]
+    [visibleTerrainFeatures]
   );
 
   const gridLineElements = useMemo(

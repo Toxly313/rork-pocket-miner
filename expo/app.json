@@ -38,8 +38,7 @@
       "expo-web-browser"
     ],
     "experiments": {
-      "typedRoutes": true,
-      "autolinkingModuleResolution": true
+      "typedRoutes": true
     }
   }
 }

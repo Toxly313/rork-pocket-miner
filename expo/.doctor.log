@@ -1,0 +1,19 @@
+2026-04-13T12:32:17.019Z expo:env Loaded environment variables from: /home/user/rork-app/expo/.env
+2026-04-13T12:32:17.019Z expo:env /home/user/rork-app/expo/.env.development does not exist, skipping this env file
+2026-04-13T12:32:17.019Z expo:env /home/user/rork-app/expo/.env.local does not exist, skipping this env file
+2026-04-13T12:32:17.019Z expo:env /home/user/rork-app/expo/.env.development.local does not exist, skipping this env file
+env: load .env
+env: export EXPO_PUBLIC_PROJECT_ID EXPO_PUBLIC_RORK_API_BASE_URL EXPO_PUBLIC_RORK_AUTH_URL EXPO_PUBLIC_RORK_TOOLKIT_SECRET_KEY EXPO_PUBLIC_TEAM_ID EXPO_PUBLIC_TOOLKIT_URL
+Error: node /home/user/rork-app/expo/node_modules/expo/bin/cli config --json --full exited with non-zero code: 1
+Error: node /home/user/rork-app/expo/node_modules/expo/bin/cli config --json --full exited with non-zero code: 1
+    at ChildProcess.completionListener (/tmp/bunx-1000-expo-doctor@latest/node_modules/expo-doctor/build/index.js:2:695)
+    at Object.onceWrapper (node:events:634:26)
+    at ChildProcess.emit (node:events:519:28)
+    at maybeClose (node:internal/child_process:1101:16)
+    at ChildProcess._handle.onexit (node:internal/child_process:304:5)
+    ...
+    at spawnAsync (/tmp/bunx-1000-expo-doctor@latest/node_modules/expo-doctor/build/index.js:2:189)
+    at spawnExpoCLI (/tmp/bunx-1000-expo-doctor@latest/node_modules/expo-doctor/build/index.js:30:132643)
+    at getProjectConfigAsync (/tmp/bunx-1000-expo-doctor@latest/node_modules/expo-doctor/build/index.js:30:119771)
+    at actionAsync (/tmp/bunx-1000-expo-doctor@latest/node_modules/expo-doctor/build/index.js:30:106953)
+    at run (/tmp/bunx-1000-expo-doctor@latest/node_modules/expo-doctor/build/index.js:30:109344)
