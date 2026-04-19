@@ -1208,6 +1208,38 @@ export default function MineGameScreen() {
     return lines;
   }, [getCurrentVisibleRange, worldUnit]);
 
+  // --- Performance Optimizations ---
+  const visibleRange = getCurrentVisibleRange();
+  const visibleRangeKey = `${visibleRange.startCol}-${visibleRange.endCol}-${visibleRange.startRow}-${visibleRange.endRow}`;
+
+  const terrainFeaturesNow = useMemo(() => getVisibleTerrainFeatures(), [getVisibleTerrainFeatures, visibleRangeKey]);
+  const gridLinesNow = useMemo(() => getGridLines(), [getGridLines, visibleRangeKey, scaleStateRef.current]);
+  const visibleBuildingsNow = useMemo(() => getVisibleBuildings(), [getVisibleBuildings, visibleRangeKey, sortedBuildings]);
+
+  const staticWorldContent = useMemo(() => (
+    <>
+      <View style={styles.worldBackdrop} />
+      {terrainFeaturesNow.map((tile) => (
+        <View
+          key={tile.key}
+          style={[
+            styles.terrainFeature,
+            { left: tile.left, top: tile.top, width: tile.width, height: tile.height, backgroundColor: tile.color },
+          ]}
+        />
+      ))}
+      {gridLinesNow.map((line) => (
+        <View
+          key={line.key}
+          style={[
+            styles.gridLine,
+            { left: line.left, top: line.top, width: line.width, height: line.height },
+          ]}
+        />
+      ))}
+    </>
+  ), [terrainFeaturesNow, gridLinesNow]);
+
   const renderOpenedBuildingContent = () => {
     if (!openedBuilding) return null;
 
@@ -1266,10 +1298,6 @@ export default function MineGameScreen() {
   };
 
   const renderBaseContent = () => {
-    const visibleBuildingsNow = getVisibleBuildings();
-    const terrainFeaturesNow = getVisibleTerrainFeatures();
-    const gridLinesNow = getGridLines();
-
     return (
       <View style={styles.baseStage} testID="base-stage">
         <View style={styles.viewportFrame}>
@@ -1309,25 +1337,7 @@ export default function MineGameScreen() {
                   },
                 ]}
               >
-                <View style={styles.worldBackdrop} />
-                {terrainFeaturesNow.map((tile) => (
-                  <View
-                    key={tile.key}
-                    style={[
-                      styles.terrainFeature,
-                      { left: tile.left, top: tile.top, width: tile.width, height: tile.height, backgroundColor: tile.color },
-                    ]}
-                  />
-                ))}
-                {gridLinesNow.map((line) => (
-                  <View
-                    key={line.key}
-                    style={[
-                      styles.gridLine,
-                      { left: line.left, top: line.top, width: line.width, height: line.height },
-                    ]}
-                  />
-                ))}
+                {staticWorldContent}
 
                 {visibleBuildingsNow.map((building) => {
                   const template = BUILDING_TEMPLATES[building.type];

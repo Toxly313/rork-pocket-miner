@@ -3,6 +3,7 @@
     "name": "Deep Mine",
     "slug": "c1xwnfk4j50t6jcn9797b",
     "version": "1.0.0",
+    "sdkVersion": "54.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "rork-app",
